@@ -8,27 +8,29 @@ import {
   Tooltip,
   Legend,
   ResponsiveContainer,
+  AreaChart,
+  Area,
 } from "recharts";
 
 const TruckTurnSimulator = () => {
   const [params, setParams] = useState({
-    mass: 12000, // kg
+    mass: 16000, // kg
     h_cg: 1.2, // meters
-    wheelbase: 4.5, // meters
-    trackWidth: 2.5, // meters
-    frictionCoeff: 0.8,
-    radius: 10, // meters
+    wheelbase: 4.2, // meters
+    trackWidth: 2.0, // meters
+    frictionCoeff: 0.7,
+    radius: 40, // meters
     bankAngle: 5, // degrees
     grade: 10, // degrees
-    steeringAngle: 15, // degrees
-    suspensionStiffness: 50000, // N/m
-    dampingCoefficient: 5000, // Ns/m
+    steeringAngle: 35, // degrees
+    suspensionStiffness: 400000, // N/m
+    dampingCoefficient: 15000, // Ns/m
     rollCenterHeight: 0.5, // meters
     airDensity: 1.225, // kg/m³
     dragCoefficient: 0.8,
-    frontalArea: 10, // m²
-    enginePower: 300, // kW
-    transmissionEfficiency: 0.9,
+    frontalArea: 9, // m²
+    enginePower: 180, // kW
+    transmissionEfficiency: 0.85,
   });
 
   const [results, setResults] = useState({
@@ -39,6 +41,25 @@ const TruckTurnSimulator = () => {
     rollAngle: 0,
     lateralAcceleration: 0,
     tractionLimit: 0,
+  });
+  const [suspensionData, setSuspensionData] = useState({
+    verticalDisplacement: [],
+    rollEnergy: [],
+  });
+
+  const [tireForces, setTireForces] = useState({
+    frontLeft: 0,
+    frontRight: 0,
+    rearLeft: 0,
+    rearRight: 0,
+  });
+
+  const [energyMetrics, setEnergyMetrics] = useState({
+    kineticEnergy: 0,
+    potentialEnergy: 0,
+    rollingResistance: 0,
+    aerodynamicLoss: 0,
+    totalEnergyConsumption: 0,
   });
 
   const [speedData, setSpeedData] = useState([]);
@@ -139,6 +160,63 @@ const TruckTurnSimulator = () => {
       actual: xActual.map((x, i) => ({ x, y: yActual[i] })),
     };
   };
+  const calculateSuspensionDynamics = (speed, time) => {
+    const data = [];
+    const rollEnergyData = [];
+
+    for (let t = 0; t < 10; t += 0.1) {
+      // Simulate suspension movement with damped oscillation
+      const displacement =
+        0.05 *
+        Math.exp(-0.5 * t) *
+        Math.cos(2 * Math.PI * t + Math.sin((speed * t) / 20));
+
+      // Calculate roll energy
+      const rollEnergy =
+        0.5 * params.suspensionStiffness * displacement * displacement;
+
+      data.push({
+        time: t,
+        displacement: displacement,
+        rollEnergy: rollEnergy,
+      });
+    }
+
+    return data;
+  };
+
+  const calculateTireForces = (lateralAcceleration, rollAngle) => {
+    const weightPerWheel = (params.mass * g) / 4;
+    const rollMoment = params.mass * params.h_cg * lateralAcceleration;
+    const loadTransfer = rollMoment / params.trackWidth;
+
+    return {
+      frontLeft: weightPerWheel - loadTransfer * 0.6,
+      frontRight: weightPerWheel + loadTransfer * 0.6,
+      rearLeft: weightPerWheel - loadTransfer * 0.4,
+      rearRight: weightPerWheel + loadTransfer * 0.4,
+    };
+  };
+
+  const calculateEnergyMetrics = (speed) => {
+    const speedMs = speed / 3.6; // Convert to m/s
+    const kineticEnergy = 0.5 * params.mass * speedMs * speedMs;
+    const gradeRadians = (params.grade * Math.PI) / 180;
+    const potentialEnergy =
+      params.mass * g * Math.sin(gradeRadians) * params.radius;
+    const rollingResistance =
+      0.01 * params.mass * g * Math.cos(gradeRadians) * params.radius;
+    const airResistance = calculateAerodynamicDrag(speedMs) * params.radius;
+
+    return {
+      kineticEnergy,
+      potentialEnergy,
+      rollingResistance,
+      aerodynamicLoss: airResistance,
+      totalEnergyConsumption:
+        kineticEnergy + potentialEnergy + rollingResistance + airResistance,
+    };
+  };
 
   const updateResults = () => {
     const maxSpeed = calculateMaxSafeSpeed(
@@ -194,6 +272,21 @@ const TruckTurnSimulator = () => {
       params.grade
     );
     setTrajectoryData(trajectoryData);
+
+    const suspensionData = calculateSuspensionDynamics(
+      results.maxSpeed,
+      simulationTime
+    );
+    setSuspensionData(suspensionData);
+
+    const newTireForces = calculateTireForces(
+      results.lateralAcceleration,
+      results.rollAngle
+    );
+    setTireForces(newTireForces);
+
+    const newEnergyMetrics = calculateEnergyMetrics(results.maxSpeed);
+    setEnergyMetrics(newEnergyMetrics);
   };
 
   useEffect(() => {
@@ -209,7 +302,7 @@ const TruckTurnSimulator = () => {
   useEffect(() => {
     const canvas = canvasRef.current;
     const ctx = canvas.getContext("2d");
-    const scale = 5;
+    const scale = 1.2;
 
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.save();
@@ -326,43 +419,102 @@ const TruckTurnSimulator = () => {
       </svg>
     );
   };
+  const SuspensionGraph = () => (
+    <div className="bg-white p-4 rounded-lg shadow-sm">
+      <h2 className="text-xl font-semibold mb-2 text-gray-800">
+        Suspension Dynamics
+      </h2>
+      <ResponsiveContainer width="100%" height={200}>
+        <AreaChart data={suspensionData}>
+          <CartesianGrid strokeDasharray="3 3" />
+          <XAxis dataKey="time" tick={{ fontSize: 10 }} />
+          <YAxis tick={{ fontSize: 10 }} />
+          <Tooltip />
+          <Area
+            type="monotone"
+            dataKey="displacement"
+            stroke="#3b82f6"
+            fill="#93c5fd"
+            name="Displacement"
+          />
+        </AreaChart>
+      </ResponsiveContainer>
+    </div>
+  );
+
+  const TireForcesCard = () => (
+    <div className="bg-white p-4 rounded-lg shadow-sm">
+      <h2 className="text-xl font-semibold mb-2 text-gray-800">
+        Tire Forces (N)
+      </h2>
+      <div className="grid grid-cols-2 gap-4">
+        {Object.entries(tireForces).map(([wheel, force]) => (
+          <div key={wheel} className="text-center p-2 bg-gray-50 rounded">
+            <div className="text-sm font-medium text-gray-600">{wheel}</div>
+            <div className="text-lg font-bold text-blue-600">
+              {force.toFixed(0)}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+
+  const EnergyConsumptionCard = () => (
+    <div className="bg-white p-4 rounded-lg shadow-sm">
+      <h2 className="text-xl font-semibold mb-2 text-gray-800">
+        Energy Analysis (kJ)
+      </h2>
+      <ul className="space-y-1 text-sm">
+        {Object.entries(energyMetrics).map(([metric, value]) => (
+          <li key={metric} className="flex justify-between">
+            <span className="text-gray-600">
+              {metric.replace(/([A-Z])/g, " $1").trim()}:
+            </span>
+            <span className="font-semibold text-blue-600">
+              {(value / 1000).toFixed(2)}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
 
   return (
-    <div className="p-8 max-w-7xl mx-auto bg-gradient-to-br from-gray-100 to-white rounded-xl shadow-2xl border border-gray-200 transition-all duration-300 hover:shadow-lg hover:border-blue-300">
-      <h1 className="text-5xl font-extrabold mb-12 text-center text-blue-700 tracking-tight">
+    <div className="p-4 mx-auto bg-gradient-to-br from-gray-100 to-white shadow-lg">
+      <h1 className="text-3xl font-bold mb-4 text-center text-blue-700">
         Truck Turn Simulator
       </h1>
 
-      {/* Parameters and Results Section */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-10 mb-12">
-        {/* Parameters Card */}
-        <div className="bg-white p-8 rounded-lg shadow-md transform hover:scale-105 transition duration-300">
-          <h2 className="text-3xl font-semibold mb-6 text-gray-800">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        {/* Parameters Section */}
+        <div className="bg-white p-4 rounded-lg shadow-sm col-span-1 md:col-span-2 lg:col-span-1">
+          <h2 className="text-xl font-semibold mb-2 text-gray-800">
             Parameters
           </h2>
-          <div className="grid grid-cols-2 gap-6">
+          <div className="grid grid-cols-2 gap-2 text-sm">
             {Object.entries(params).map(([key, value]) => (
               <div key={key} className="flex flex-col">
-                <label className="block text-sm font-medium text-gray-700 mb-2">
+                <label className="text-xs font-medium text-gray-700">
                   {key}
                 </label>
                 <input
                   type="number"
                   value={value}
                   onChange={(e) => handleParamChange(key, e.target.value)}
-                  className="w-full px-4 py-2 bg-gray-50 border border-gray-300 rounded-md shadow-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition duration-200"
+                  className="w-full px-2 py-1 bg-gray-50 border border-gray-300 rounded-sm text-xs"
                 />
               </div>
             ))}
           </div>
         </div>
 
-        {/* Results Card */}
-        <div className="bg-white p-8 rounded-lg shadow-md transform hover:scale-105 transition duration-300">
-          <h2 className="text-3xl font-semibold mb-6 text-gray-800">Results</h2>
-          <ul className="space-y-3">
+        {/* Results Section */}
+        <div className="bg-white p-4 rounded-lg shadow-sm">
+          <h2 className="text-xl font-semibold mb-2 text-gray-800">Results</h2>
+          <ul className="space-y-1 text-sm">
             {Object.entries(results).map(([key, value]) => (
-              <li key={key} className="flex justify-between text-lg">
+              <li key={key} className="flex justify-between">
                 <span className="text-gray-600">{key}:</span>
                 <span className="font-semibold text-blue-600">
                   {value.toFixed(2)}
@@ -371,18 +523,15 @@ const TruckTurnSimulator = () => {
             ))}
           </ul>
         </div>
-      </div>
 
-      {/* Visualization and Chart Section */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-10 mb-12">
-        {/* Truck Visualization Card */}
-        <div className="bg-white p-8 rounded-lg shadow-md transform hover:scale-105 transition duration-300">
-          <h2 className="text-3xl font-semibold mb-6 text-gray-800">
+        {/* Truck Visualization Section */}
+        <div className="bg-white p-4 rounded-lg shadow-sm">
+          <h2 className="text-xl font-semibold mb-2 text-gray-800">
             Truck Visualization
           </h2>
           <TruckVisualization />
-          <div className="mt-6">
-            <label className="block text-sm font-medium text-gray-700 mb-2">
+          <div className="mt-2">
+            <label className="block text-xs font-medium text-gray-700">
               Simulation Time: {simulationTime.toFixed(1)} s
             </label>
             <input
@@ -398,69 +547,57 @@ const TruckTurnSimulator = () => {
         </div>
 
         {/* Speed vs. Turn Radius Chart */}
-        <div className="bg-white p-8 rounded-lg shadow-md transform hover:scale-105 transition duration-300">
-          <h2 className="text-3xl font-semibold mb-6 text-gray-800">
+        <div className="bg-white p-4 rounded-lg shadow-sm col-span-1 md:col-span-2 lg:col-span-1">
+          <h2 className="text-xl font-semibold mb-2 text-gray-800">
             Speed vs. Turn Radius
           </h2>
-          <ResponsiveContainer width="100%" height={300}>
+          <ResponsiveContainer width="100%" height={200}>
             <LineChart data={speedData}>
               <CartesianGrid strokeDasharray="3 3" />
-              <XAxis
-                dataKey="radius"
-                label={{ value: "Turn Radius (m)", position: "bottom" }}
-                tick={{ fill: "#4B5563" }}
-              />
-              <YAxis
-                label={{
-                  value: "Max Safe Speed (km/h)",
-                  angle: -90,
-                  position: "left",
-                  fill: "#4B5563",
-                }}
-                tick={{ fill: "#4B5563" }}
-              />
+              <XAxis dataKey="radius" tick={{ fontSize: 10 }} />
+              <YAxis tick={{ fontSize: 10 }} />
               <Tooltip />
               <Legend />
               <Line
                 type="monotone"
                 dataKey="speed"
                 stroke="#3b82f6"
-                strokeWidth={3}
-                dot={{ stroke: "#3b82f6", strokeWidth: 2 }}
+                strokeWidth={2}
+                dot={false}
               />
             </LineChart>
           </ResponsiveContainer>
         </div>
-      </div>
 
-      {/* Truck Trajectory Simulation Section */}
-      <div className="bg-white p-8 rounded-lg shadow-md transform hover:scale-105 transition duration-300">
-        <h2 className="text-3xl font-semibold mb-6 text-gray-800">
-          Truck Trajectory Simulation
-        </h2>
-        <div className="mb-6">
-          <label className="block text-sm font-medium text-gray-700 mb-2">
-            Speed Factor
-          </label>
-          <input
-            type="range"
-            min="0.2"
-            max="3.0"
-            step="0.05"
-            value={speedFactor}
-            onChange={(e) => setSpeedFactor(parseFloat(e.target.value))}
-            className="w-full accent-blue-600"
+        {/* Truck Trajectory Simulation */}
+        <div className="bg-white p-4 rounded-lg shadow-sm col-span-1 md:col-span-2 lg:col-span-1">
+          <h2 className="text-xl font-semibold mb-2 text-gray-800">
+            Trajectory Simulation
+          </h2>
+          <div className="flex items-center mb-2">
+            <label className="text-xs font-medium text-gray-700 mr-2 whitespace-nowrap">
+              Speed: {speedFactor.toFixed(2)}x
+            </label>
+            <input
+              type="range"
+              min="0.2"
+              max="3.0"
+              step="0.05"
+              value={speedFactor}
+              onChange={(e) => setSpeedFactor(parseFloat(e.target.value))}
+              className="w-full accent-blue-600"
+            />
+          </div>
+          <canvas
+            ref={canvasRef}
+            width="300"
+            height="200"
+            className="w-full border border-gray-300 rounded-md"
           />
-          <span className="text-sm text-gray-600 mt-2 block">
-            Current Speed Factor: {speedFactor.toFixed(2)}
-          </span>
         </div>
-        <canvas
-          ref={canvasRef}
-          width="600"
-          height="400"
-          className="mx-auto border border-gray-300 rounded-md"
-        />
+        <SuspensionGraph />
+        <TireForcesCard />
+        <EnergyConsumptionCard />
       </div>
     </div>
   );
