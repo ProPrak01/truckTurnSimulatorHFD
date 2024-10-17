@@ -522,6 +522,7 @@ const TruckTurnSimulator = () => {
               </li>
             ))}
           </ul>
+          <EnergyConsumptionCard />
         </div>
 
         {/* Truck Visualization Section */}
@@ -597,7 +598,7 @@ const TruckTurnSimulator = () => {
         </div>
         <SuspensionGraph />
         <TireForcesCard />
-        <EnergyConsumptionCard />
+        
       </div>
     </div>
   );
