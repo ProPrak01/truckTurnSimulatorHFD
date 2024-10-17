@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import {
   LineChart,
   Line,
@@ -12,14 +12,14 @@ import {
 
 const TruckTurnSimulator = () => {
   const [params, setParams] = useState({
-    mass: 40000, // kg
-    wheelbase: 6.5, // meters
+    mass: 12000, // kg
+    h_cg: 1.2, // meters
+    wheelbase: 4.5, // meters
     trackWidth: 2.5, // meters
-    cgHeight: 2.0, // meters
-    frictionCoeff: 0.7,
-    radius: 50, // meters
+    frictionCoeff: 0.8,
+    radius: 10, // meters
     bankAngle: 5, // degrees
-    grade: 3, // degrees
+    grade: 10, // degrees
   });
 
   const [results, setResults] = useState({
@@ -31,49 +31,75 @@ const TruckTurnSimulator = () => {
 
   const [speedData, setSpeedData] = useState([]);
   const [truckAngle, setTruckAngle] = useState(0);
+  const [trajectoryData, setTrajectoryData] = useState({
+    ideal: [],
+    actual: [],
+  });
+  const [speedFactor, setSpeedFactor] = useState(1.0);
+
+  const canvasRef = useRef(null);
 
   const g = 9.81; // gravitational acceleration (m/s²)
 
-  const calculateMaxSpeed = (radius, bankAngle, grade) => {
-    const bankRad = (bankAngle * Math.PI) / 180;
-    const gradeRad = (grade * Math.PI) / 180;
+  const calculateMaxSafeSpeed = (radius, bankAngle, grade) => {
+    const theta = (bankAngle * Math.PI) / 180;
+    const alpha = (grade * Math.PI) / 180;
 
-    const gLateral = g * Math.sin(bankRad);
-    const gNormal = g * Math.cos(bankRad) * Math.cos(gradeRad);
+    const lateralAcc =
+      (params.frictionCoeff * g * Math.cos(alpha)) /
+      (1 + (params.h_cg * Math.sin(theta)) / radius);
 
-    const solveForSpeed = (v) => {
-      const aCent = v ** 2 / radius;
-      const FzTotal = params.mass * gNormal;
-      const FyRequired = params.mass * (aCent - gLateral);
-      const deltaFz =
-        (params.mass * aCent * params.cgHeight) / params.trackWidth;
-      const FzInner = FzTotal / 2 - deltaFz;
-      const FFriction = params.frictionCoeff * FzTotal;
+    return Math.sqrt(radius * lateralAcc);
+  };
 
-      return Math.min(FFriction - Math.abs(FyRequired), FzInner);
-    };
+  const simulateTrajectory = (radius, speed, bankAngle, grade) => {
+    const arcAngle = Array.from(
+      { length: 50 },
+      (_, i) => (i * Math.PI) / (2 * 49)
+    );
+    const xIdeal = arcAngle.map((angle) => radius * Math.cos(angle));
+    const yIdeal = arcAngle.map((angle) => radius * Math.sin(angle));
 
-    let maxSpeed = 0;
-    for (let v = 0; v <= 50; v += 0.1) {
-      if (solveForSpeed(v) > 0) {
-        maxSpeed = v;
-      } else {
-        break;
+    const xStraight = Array.from(
+      { length: 20 },
+      (_, i) => -radius + (i * radius) / 19
+    );
+    const yStraight = new Array(20).fill(0);
+
+    const xIdealFull = [...xStraight, ...xIdeal];
+    const yIdealFull = [...yStraight, ...yIdeal];
+
+    const xActual = [...xIdealFull];
+    const yActual = [...yIdealFull];
+
+    const actualPathLength = xActual.length;
+    const deviationFactor = speed ** 2 / (radius * params.frictionCoeff * g);
+
+    for (let i = 1; i < actualPathLength; i++) {
+      if (i >= 5) {
+        const deviation = deviationFactor * 0.05 * (i / actualPathLength) ** 2;
+        if (i - 1 < arcAngle.length) {
+          xActual[i] += deviation * (1 + Math.sin(arcAngle[i - 1]) * 1.5);
+          yActual[i] += deviation * 1.5;
+        }
       }
     }
 
-    return maxSpeed;
+    return {
+      ideal: xIdealFull.map((x, i) => ({ x, y: yIdealFull[i] })),
+      actual: xActual.map((x, i) => ({ x, y: yActual[i] })),
+    };
   };
 
   const updateResults = () => {
-    const maxSpeed = calculateMaxSpeed(
+    const maxSpeed = calculateMaxSafeSpeed(
       params.radius,
       params.bankAngle,
       params.grade
     );
-    const staticRolloverThreshold = params.trackWidth / (2 * params.cgHeight);
+    const staticRolloverThreshold = params.trackWidth / (2 * params.h_cg);
     const loadTransferRatio =
-      (params.mass * (maxSpeed ** 2 / params.radius) * params.cgHeight) /
+      (params.mass * (maxSpeed ** 2 / params.radius) * params.h_cg) /
       (params.trackWidth *
         params.mass *
         g *
@@ -96,10 +122,19 @@ const TruckTurnSimulator = () => {
     // Generate speed data for different radii
     const newSpeedData = [];
     for (let r = 20; r <= 100; r += 5) {
-      const speed = calculateMaxSpeed(r, params.bankAngle, params.grade);
+      const speed = calculateMaxSafeSpeed(r, params.bankAngle, params.grade);
       newSpeedData.push({ radius: r, speed: speed * 3.6 });
     }
     setSpeedData(newSpeedData);
+
+    // Update trajectory data
+    const trajectoryData = simulateTrajectory(
+      params.radius,
+      maxSpeed * speedFactor,
+      params.bankAngle,
+      params.grade
+    );
+    setTrajectoryData(trajectoryData);
   };
 
   useEffect(() => {
@@ -109,7 +144,40 @@ const TruckTurnSimulator = () => {
       setTruckAngle((prevAngle) => (prevAngle + 1) % 360);
     }, 50);
     return () => clearInterval(interval);
-  }, [params]);
+  }, [params, speedFactor]);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    const ctx = canvas.getContext("2d");
+    const scale = 5;
+
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.save();
+    ctx.translate(canvas.width / 2, canvas.height / 2);
+    ctx.scale(scale, -scale);
+
+    // Draw ideal path
+    ctx.beginPath();
+    ctx.strokeStyle = "#000";
+    ctx.setLineDash([5, 5]);
+    trajectoryData.ideal.forEach((point, i) => {
+      if (i === 0) ctx.moveTo(point.x, point.y);
+      else ctx.lineTo(point.x, point.y);
+    });
+    ctx.stroke();
+
+    // Draw actual path
+    ctx.beginPath();
+    ctx.strokeStyle = "#f00";
+    ctx.setLineDash([]);
+    trajectoryData.actual.forEach((point, i) => {
+      if (i === 0) ctx.moveTo(point.x, point.y);
+      else ctx.lineTo(point.x, point.y);
+    });
+    ctx.stroke();
+
+    ctx.restore();
+  }, [trajectoryData]);
 
   const handleParamChange = (name, value) => {
     setParams((prevParams) => ({ ...prevParams, [name]: parseFloat(value) }));
@@ -256,6 +324,34 @@ const TruckTurnSimulator = () => {
             </LineChart>
           </ResponsiveContainer>
         </div>
+      </div>
+      <div className="bg-gray-50 p-6 rounded-lg shadow-md mb-8">
+        <h2 className="text-2xl font-semibold mb-4 text-gray-800">
+          Truck Trajectory Simulation
+        </h2>
+        <div className="mb-4">
+          <label className="block text-sm font-medium text-gray-700 mb-1">
+            Speed Factor
+          </label>
+          <input
+            type="range"
+            min="0.2"
+            max="3.0"
+            step="0.05"
+            value={speedFactor}
+            onChange={(e) => setSpeedFactor(parseFloat(e.target.value))}
+            className="w-full"
+          />
+          <span className="text-sm text-gray-600">
+            Current Speed Factor: {speedFactor.toFixed(2)}
+          </span>
+        </div>
+        <canvas
+          ref={canvasRef}
+          width="600"
+          height="400"
+          className="mx-auto border border-gray-300"
+        />
       </div>
     </div>
   );
