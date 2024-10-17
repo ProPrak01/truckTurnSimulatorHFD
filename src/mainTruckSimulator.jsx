@@ -461,7 +461,7 @@ const TruckTurnSimulator = () => {
   );
 
   const EnergyConsumptionCard = () => (
-    <div className="bg-white p-4 rounded-lg shadow-sm">
+    <div className="bg-white p-4 rounded-lg shadow-sm border-1 border-grey">
       <h2 className="text-xl font-semibold mb-2 text-gray-800">
         Energy Analysis (kJ)
       </h2>
