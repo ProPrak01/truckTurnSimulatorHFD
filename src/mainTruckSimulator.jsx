@@ -747,7 +747,7 @@ const TruckTurnSimulator = () => {
           />
         </div>
         <SuspensionGraph />
-        <TireForcesCard />
+        {/* <TireForcesCard /> */}
       </div>
     </div>
   );
