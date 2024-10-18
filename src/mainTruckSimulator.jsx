@@ -76,24 +76,27 @@ const TruckTurnSimulator = () => {
   const g = 9.81; // gravitational acceleration (m/s²)
 
   const calculateMaxSafeSpeed = (radius, bankAngle, grade) => {
-    const theta = (bankAngle * Math.PI) / 180;
-    const alpha = (grade * Math.PI) / 180;
+    const theta = (bankAngle * Math.PI) / 180; // bank angle in radians
+    const alpha = (grade * Math.PI) / 180; // grade angle in radians
 
-    const lateralAcc =
-      (params.frictionCoeff * g * Math.cos(alpha)) /
-      (1 + (params.h_cg * Math.sin(theta)) / radius);
+    // Corrected formula considering banking effect
+    const numerator =
+      g * radius * (params.frictionCoeff * Math.cos(theta) + Math.sin(theta));
+    const denominator =
+      Math.cos(theta) - params.frictionCoeff * Math.sin(theta);
 
-    return Math.sqrt(radius * lateralAcc);
+    return Math.sqrt(numerator / denominator);
   };
-
   const calculateRollAngle = (lateralAcceleration) => {
     const rollStiffness = params.suspensionStiffness * params.trackWidth ** 2;
     const rollMoment = params.mass * params.h_cg * lateralAcceleration;
     return (Math.atan(rollMoment / rollStiffness) * 180) / Math.PI;
   };
 
-  const calculateLateralAcceleration = (speed, radius) => {
-    return speed ** 2 / radius;
+  const calculateLateralAcceleration = (speed, radius, bankAngle) => {
+    const theta = (bankAngle * Math.PI) / 180;
+    // Corrected lateral acceleration with banking
+    return speed ** 2 / radius - g * Math.sin(theta);
   };
 
   const calculateTractionLimit = () => {
@@ -160,25 +163,39 @@ const TruckTurnSimulator = () => {
       actual: xActual.map((x, i) => ({ x, y: yActual[i] })),
     };
   };
-  const calculateSuspensionDynamics = (speed, time) => {
+  const calculateSuspensionDynamics = (speed, time, bankAngle) => {
     const data = [];
-    const rollEnergyData = [];
+    const bankRadians = (bankAngle * Math.PI) / 180;
+    const baseDisplacement = (Math.sin(bankRadians) * params.trackWidth) / 2;
 
-    for (let t = 0; t < 10; t += 0.1) {
-      // Simulate suspension movement with damped oscillation
+    // Generate more data points for smoother animation
+    for (let t = 0; t <= 10; t += 0.1) {
+      // Enhanced suspension movement simulation
+      const lateralAccel = (speed * speed) / params.radius;
+      const rollInfluence = (lateralAccel * params.h_cg) / params.trackWidth;
+
+      // Combine multiple oscillation effects
       const displacement =
+        baseDisplacement +
         0.05 *
-        Math.exp(-0.5 * t) *
-        Math.cos(2 * Math.PI * t + Math.sin((speed * t) / 20));
+          Math.exp((-params.dampingCoefficient * t) / params.mass) *
+          Math.cos(Math.sqrt(params.suspensionStiffness / params.mass) * t) +
+        rollInfluence * Math.sin((2 * Math.PI * t) / 5);
 
-      // Calculate roll energy
-      const rollEnergy =
+      // Calculate suspension energy
+      const springForce = params.suspensionStiffness * displacement;
+      const dampingForce = params.dampingCoefficient * (displacement / 0.1); // approximate velocity
+      const suspensionEnergy =
         0.5 * params.suspensionStiffness * displacement * displacement;
 
+      // Add data point
       data.push({
-        time: t,
-        displacement: displacement,
-        rollEnergy: rollEnergy,
+        time: t.toFixed(1),
+        displacement: displacement.toFixed(4),
+        velocity: (displacement / 0.1).toFixed(4),
+        energy: (suspensionEnergy / 1000).toFixed(2), // Convert to kJ
+        springForce: springForce.toFixed(0),
+        dampingForce: dampingForce.toFixed(0),
       });
     }
 
@@ -187,8 +204,18 @@ const TruckTurnSimulator = () => {
 
   const calculateTireForces = (lateralAcceleration, rollAngle) => {
     const weightPerWheel = (params.mass * g) / 4;
-    const rollMoment = params.mass * params.h_cg * lateralAcceleration;
-    const loadTransfer = rollMoment / params.trackWidth;
+    const bankRadians = (params.bankAngle * Math.PI) / 180;
+    const rollRadians = (rollAngle * Math.PI) / 180;
+
+    // Calculate combined roll moment from lateral acceleration and banking
+    const rollMoment =
+      params.mass *
+      params.h_cg *
+      (lateralAcceleration * Math.cos(bankRadians) + g * Math.sin(bankRadians));
+
+    // Calculate load transfer considering banking
+    const loadTransfer =
+      (rollMoment / params.trackWidth) * Math.cos(rollRadians);
 
     return {
       frontLeft: weightPerWheel - loadTransfer * 0.6,
@@ -198,14 +225,26 @@ const TruckTurnSimulator = () => {
     };
   };
 
-  const calculateEnergyMetrics = (speed) => {
+  const calculateEnergyMetrics = (speed, bankAngle) => {
     const speedMs = speed / 3.6; // Convert to m/s
-    const kineticEnergy = 0.5 * params.mass * speedMs * speedMs;
+    const bankRadians = (bankAngle * Math.PI) / 180;
     const gradeRadians = (params.grade * Math.PI) / 180;
-    const potentialEnergy =
-      params.mass * g * Math.sin(gradeRadians) * params.radius;
-    const rollingResistance =
-      0.01 * params.mass * g * Math.cos(gradeRadians) * params.radius;
+
+    // Calculate kinetic energy
+    const kineticEnergy = 0.5 * params.mass * speedMs * speedMs;
+
+    // Calculate potential energy considering both grade and banking
+    const heightChange =
+      Math.sin(gradeRadians) * params.radius +
+      ((1 - Math.cos(bankRadians)) * params.trackWidth) / 2;
+    const potentialEnergy = params.mass * g * heightChange;
+
+    // Calculate rolling resistance considering banking and grade
+    const normalForce =
+      params.mass * g * Math.cos(gradeRadians) * Math.cos(bankRadians);
+    const rollingResistance = 0.01 * normalForce * params.radius;
+
+    // Calculate aerodynamic loss
     const airResistance = calculateAerodynamicDrag(speedMs) * params.radius;
 
     return {
@@ -217,34 +256,57 @@ const TruckTurnSimulator = () => {
         kineticEnergy + potentialEnergy + rollingResistance + airResistance,
     };
   };
-
   const updateResults = () => {
+    // Calculate maximum safe speed considering banking and grade
     const maxSpeed = calculateMaxSafeSpeed(
       params.radius,
       params.bankAngle,
       params.grade
     );
-    const staticRolloverThreshold = params.trackWidth / (2 * params.h_cg);
+
+    // Calculate lateral acceleration with banking effect
+    const lateralAcceleration = calculateLateralAcceleration(
+      maxSpeed,
+      params.radius,
+      params.bankAngle
+    );
+
+    // Calculate static rollover threshold with banking consideration
+    const staticRolloverThreshold =
+      (params.trackWidth / (2 * params.h_cg)) *
+      Math.cos((params.bankAngle * Math.PI) / 180);
+
+    // Calculate load transfer ratio considering banking and grade
+    const bankRadians = (params.bankAngle * Math.PI) / 180;
+    const gradeRadians = (params.grade * Math.PI) / 180;
+
     const loadTransferRatio =
-      (params.mass * (maxSpeed ** 2 / params.radius) * params.h_cg) /
+      (params.mass * lateralAcceleration * params.h_cg) /
       (params.trackWidth *
         params.mass *
         g *
-        Math.cos((params.bankAngle * Math.PI) / 180) *
-        Math.cos((params.grade * Math.PI) / 180));
+        Math.cos(bankRadians) *
+        Math.cos(gradeRadians));
+
+    // Calculate side slip margin with banking effect
     const sideSlipMargin =
       params.frictionCoeff *
         g *
-        Math.cos((params.bankAngle * Math.PI) / 180) *
-        Math.cos((params.grade * Math.PI) / 180) -
-      maxSpeed ** 2 / params.radius;
+        Math.cos(bankRadians) *
+        Math.cos(gradeRadians) -
+      lateralAcceleration;
 
-    const lateralAcceleration = calculateLateralAcceleration(
-      maxSpeed,
-      params.radius
-    );
-    const rollAngle = calculateRollAngle(lateralAcceleration);
-    const tractionLimit = calculateTractionLimit();
+    // Calculate roll angle based on lateral acceleration and banking
+    const rollAngle =
+      calculateRollAngle(lateralAcceleration) + params.bankAngle;
+
+    // Calculate traction limit considering grade and banking
+    const tractionLimit =
+      params.frictionCoeff *
+      params.mass *
+      g *
+      Math.cos(bankRadians) *
+      Math.cos(gradeRadians);
 
     setResults({
       maxSpeed: maxSpeed * 3.6, // Convert to km/h
@@ -256,7 +318,7 @@ const TruckTurnSimulator = () => {
       tractionLimit,
     });
 
-    // Generate speed data for different radii
+    // Generate speed vs radius data with banking consideration
     const newSpeedData = [];
     for (let r = 20; r <= 100; r += 5) {
       const speed = calculateMaxSafeSpeed(r, params.bankAngle, params.grade);
@@ -264,7 +326,7 @@ const TruckTurnSimulator = () => {
     }
     setSpeedData(newSpeedData);
 
-    // Update trajectory data
+    // Update trajectory simulation
     const trajectoryData = simulateTrajectory(
       params.radius,
       maxSpeed * speedFactor,
@@ -273,31 +335,38 @@ const TruckTurnSimulator = () => {
     );
     setTrajectoryData(trajectoryData);
 
+    // Calculate suspension dynamics with banking effect
     const suspensionData = calculateSuspensionDynamics(
-      results.maxSpeed,
-      simulationTime
+      maxSpeed,
+      simulationTime,
+      params.bankAngle
     );
     setSuspensionData(suspensionData);
 
-    const newTireForces = calculateTireForces(
-      results.lateralAcceleration,
-      results.rollAngle
-    );
+    // Calculate tire forces considering banking and load transfer
+    const newTireForces = calculateTireForces(lateralAcceleration, rollAngle);
     setTireForces(newTireForces);
 
-    const newEnergyMetrics = calculateEnergyMetrics(results.maxSpeed);
+    // Calculate energy metrics with banking consideration
+    const newEnergyMetrics = calculateEnergyMetrics(maxSpeed, params.bankAngle);
     setEnergyMetrics(newEnergyMetrics);
   };
 
   useEffect(() => {
     updateResults();
+    const suspensionData = calculateSuspensionDynamics(
+      results.maxSpeed,
+      simulationTime,
+      params.bankAngle
+    );
+    setSuspensionData(suspensionData);
     // Animate truck turning
     const interval = setInterval(() => {
       setTruckAngle((prevAngle) => (prevAngle + 1) % 360);
       setSimulationTime((prevTime) => prevTime + 0.1);
     }, 50);
     return () => clearInterval(interval);
-  }, [params, speedFactor]);
+  }, [params, speedFactor, simulationTime]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -419,28 +488,109 @@ const TruckTurnSimulator = () => {
       </svg>
     );
   };
-  const SuspensionGraph = () => (
-    <div className="bg-white p-4 rounded-lg shadow-sm">
-      <h2 className="text-xl font-semibold mb-2 text-gray-800">
-        Suspension Dynamics
-      </h2>
-      <ResponsiveContainer width="100%" height={200}>
-        <AreaChart data={suspensionData}>
-          <CartesianGrid strokeDasharray="3 3" />
-          <XAxis dataKey="time" tick={{ fontSize: 10 }} />
-          <YAxis tick={{ fontSize: 10 }} />
-          <Tooltip />
-          <Area
-            type="monotone"
-            dataKey="displacement"
-            stroke="#3b82f6"
-            fill="#93c5fd"
-            name="Displacement"
-          />
-        </AreaChart>
-      </ResponsiveContainer>
-    </div>
-  );
+  const SuspensionGraph = () => {
+    // Format tooltip values
+    const CustomTooltip = ({ active, payload, label }) => {
+      if (active && payload && payload.length) {
+        return (
+          <div className="bg-white p-2 border border-gray-200 rounded shadow-sm">
+            <p className="text-sm">Time: {label}s</p>
+            {payload.map((entry, index) => (
+              <p key={index} className="text-sm" style={{ color: entry.color }}>
+                {entry.name}: {entry.value}
+              </p>
+            ))}
+          </div>
+        );
+      }
+      return null;
+    };
+
+    return (
+      <div className="bg-white p-4 rounded-lg shadow-sm">
+        <h2 className="text-xl font-semibold mb-2 text-gray-800">
+          Suspension Dynamics
+        </h2>
+        <div className="grid grid-cols-1 gap-4">
+          {/* Displacement Graph */}
+          <div>
+            <h3 className="text-sm font-medium text-gray-600 mb-1">
+              Displacement & Energy
+            </h3>
+            <ResponsiveContainer width="100%" height={200}>
+              <LineChart data={suspensionData}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#eee" />
+                <XAxis
+                  dataKey="time"
+                  label={{ value: "Time (s)", position: "bottom" }}
+                  tick={{ fontSize: 10 }}
+                />
+                <YAxis
+                  yAxisId="left"
+                  label={{
+                    value: "Displacement (m)",
+                    angle: -90,
+                    position: "insideLeft",
+                  }}
+                  tick={{ fontSize: 10 }}
+                />
+                <YAxis
+                  yAxisId="right"
+                  orientation="right"
+                  label={{
+                    value: "Energy (kJ)",
+                    angle: 90,
+                    position: "insideRight",
+                  }}
+                  tick={{ fontSize: 10 }}
+                />
+                <Tooltip content={<CustomTooltip />} />
+                <Legend />
+                <Line
+                  yAxisId="left"
+                  type="monotone"
+                  dataKey="displacement"
+                  stroke="#3b82f6"
+                  dot={false}
+                  name="Displacement"
+                />
+                <Line
+                  yAxisId="right"
+                  type="monotone"
+                  dataKey="energy"
+                  stroke="#ef4444"
+                  dot={false}
+                  name="Energy"
+                />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+
+          {/* Forces Display */}
+          <div className="grid grid-cols-2 gap-4">
+            <div className="bg-gray-50 p-2 rounded">
+              <p className="text-sm font-medium text-gray-600">
+                Spring Force (N)
+              </p>
+              <p className="text-lg font-bold text-blue-600">
+                {suspensionData[Math.floor(simulationTime * 10)]?.springForce ||
+                  "0"}
+              </p>
+            </div>
+            <div className="bg-gray-50 p-2 rounded">
+              <p className="text-sm font-medium text-gray-600">
+                Damping Force (N)
+              </p>
+              <p className="text-lg font-bold text-blue-600">
+                {suspensionData[Math.floor(simulationTime * 10)]
+                  ?.dampingForce || "0"}
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  };
 
   const TireForcesCard = () => (
     <div className="bg-white p-4 rounded-lg shadow-sm">
@@ -483,7 +633,7 @@ const TruckTurnSimulator = () => {
   return (
     <div className="p-4 mx-auto bg-gradient-to-br from-gray-100 to-white shadow-lg">
       <h1 className="text-3xl font-bold mb-4 text-center text-blue-700">
-        Truck Turn Simulator
+        Truck Turn Simulator HFD
       </h1>
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -577,7 +727,7 @@ const TruckTurnSimulator = () => {
           </h2>
           <div className="flex items-center mb-2">
             <label className="text-xs font-medium text-gray-700 mr-2 whitespace-nowrap">
-              Speed: {speedFactor.toFixed(2)}x
+              Speed Factor: {speedFactor.toFixed(2)}x
             </label>
             <input
               type="range"
@@ -598,7 +748,6 @@ const TruckTurnSimulator = () => {
         </div>
         <SuspensionGraph />
         <TireForcesCard />
-        
       </div>
     </div>
   );
